@@ -67,7 +67,7 @@ async def start(client, message):
         [InlineKeyboardButton("❌ Close", callback_data="close")],
     ]
 
-    video_url = "https://envs.sh/w3g.mp4"
+    video_url = "https://i.postimg.cc/RFZFqwRX/Manga-Mania.png"
     sent_message = await message.reply_video(
         video=video_url,
         caption="👋 Welcome to the Manga Search Bot!",
@@ -237,17 +237,20 @@ async def manga_details(client, callback_query):
         )
         print(cover_url)
         if cover_url:
-            await callback_query.message.reply_photo(
-                cover_url,
-                caption=text,
-                reply_markup=InlineKeyboardMarkup(buttons),
-                message_effect_id=5159385139981059251,
-                parse_mode=ParseMode.HTML,
-            )
-        else:
-            await callback_query.message.reply_text(
-                text, reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            response = requests.get(cover_url)
+            if response.status_code == 200:
+                with open("cover.jpg", "wb") as f:
+                    f.write(response.content)
+
+                await callback_query.message.reply_photo(
+                    "cover.jpg",
+                    caption=text,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML,
+                )
+                os.remove("cover.jpg")  # Clean up after sending
+            else:
+                await callback_query.message.reply_text("Failed to fetch cover image.")
     else:
         await callback_query.message.reply_text("Manga details not found.")
 
@@ -349,8 +352,10 @@ async def queue_full_page(client, callback_query):
         asyncio.create_task(process_chapter_queue(user_id))
 
 
-def download_and_convert_images(images, download_dir):
+def download_and_convert_images(images, download_dir, additional_image_url=None):
     image_files = []
+
+    # Download and convert the chapter's images
     for idx, img in enumerate(images, 1):
         image_url = f"https://meo.comick.pictures/{img['b2key']}"
         print(image_url)
@@ -370,6 +375,17 @@ def download_and_convert_images(images, download_dir):
                 continue
 
             image_files.append(img_path)
+
+    # If an additional image is provided, download and add it
+    if additional_image_url:
+        additional_image_response = requests.get(additional_image_url)
+        if additional_image_response.status_code == 200:
+            additional_image_path = os.path.join(download_dir, "end_image.jpg")
+            with open(additional_image_path, "wb") as img_file:
+                img_file.write(additional_image_response.content)
+
+            # Add this image at the end of the list
+            image_files.append(additional_image_path)
 
     return image_files
 
@@ -431,14 +447,15 @@ def create_pdf(image_files, pdf_path):
 async def process_chapter_queue(user_id):
     async def process_chapter(match):
         comic_hid_full, chap_hid, chap_num, callback_query = match
-        chap_num = chap_num
 
         download_dir = os.path.join(
             "downloads", f"{user_id}/{comic_hid_full}/{chap_num}"
         )
         os.makedirs(download_dir, exist_ok=True)
 
-        chapter_url = f"https://comick.io/comic/{comic_hid_full}/{chap_hid}-chapter-{chap_num}-en"
+        chapter_url = (
+            f"https://comick.io/comic/{comic_hid_full}/{chap_hid}-chapter-{chap_num}-en"
+        )
         print(f"Processing: {chapter_url}")
 
         try:
@@ -460,16 +477,23 @@ async def process_chapter_queue(user_id):
             if not images:
                 raise Exception("No images found")
 
-            image_files = download_and_convert_images(images, download_dir)
+            # Path of the additional image (stored in the same directory as your script)
+            additional_image_path = "https://i.postimg.cc/RFZFqwRX/Manga-Mania.png"  # Ensure correct absolute path
+
+            # Convert images and add the end page if available
+            image_files = download_and_convert_images(
+                images, download_dir, additional_image_path
+            )
+
             if not image_files:
                 raise Exception("Failed to download any images.")
 
             # Generate PDF
             manga_title = chapter_data["md_comics"]["title"]
-            sanitized_title = re.sub(r'[\\/*?:"<>|]', "", manga_title)  # Remove invalid characters
+            sanitized_title = re.sub(r'[\\/*?:"<>|]', "", manga_title)
             pdf_filename = f"[CH-{chap_num}] {sanitized_title} [@Manga_Mania_Pro].pdf"
-            print("File: " + pdf_filename)
             pdf_path = os.path.join(download_dir, pdf_filename)
+            print(pdf_filename)
 
             await asyncio.to_thread(create_pdf, image_files, pdf_path)
 
