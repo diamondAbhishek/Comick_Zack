@@ -206,7 +206,9 @@ async def manga_details(client, callback_query):
             if comic.get("md_covers")
             else None
         )
-        description = comic.get("desc", "").split("\n\n---\n")[0]
+        desc = comic.get("desc") or ""
+        description = desc.split("\n\n---\n")[0]
+        # description = comic.get("desc", "").split("\n\n---\n")[0]
         if len(description) > 500:
             description = description[:500] + "..."
         manga_type = {"kr": "Manhwa", "jp": "Manga", "cn": "Manhua"}.get(country, "N/A")
@@ -335,7 +337,10 @@ async def queue_full_page(client, callback_query):
     unique_chapters = []
 
     for chap in chapters_data["chapters"]:
-        chap_number = str(chap["chap"])  # Keep as string to preserve decimal places
+        if chap["chap"] is None:
+            continue  # Skip chapters without a valid chapter number
+
+        chap_number = str(chap["chap"])
 
         if chap_number not in seen_chapters:
             seen_chapters.add(chap_number)
@@ -352,72 +357,98 @@ async def queue_full_page(client, callback_query):
         asyncio.create_task(process_chapter_queue(user_id))
 
 
-def download_and_convert_images(images, download_dir, additional_image_url=None):
-    image_files = []
-
-    # Download and convert the chapter's images
-    for idx, img in enumerate(images, 1):
-        image_url = f"https://meo.comick.pictures/{img['b2key']}"
-        print(image_url)
-        image_response = requests.get(image_url)
-
-        if image_response.status_code == 200:
-            img_path = os.path.join(download_dir, f"{idx}.jpg")
-            with open(img_path, "wb") as img_file:
-                img_file.write(image_response.content)
-
-            try:
-                with Image.open(img_path) as img:
-                    img = img.convert("RGB")
-                    img.save(img_path, "JPEG")
-            except Exception as e:
-                print(f"Error converting image: {e}")
-                continue
-
-            image_files.append(img_path)
-
-    # If an additional image is provided, download and add it
-    if additional_image_url:
-        additional_image_response = requests.get(additional_image_url)
-        if additional_image_response.status_code == 200:
-            additional_image_path = os.path.join(download_dir, "end_image.jpg")
-            with open(additional_image_path, "wb") as img_file:
-                img_file.write(additional_image_response.content)
-
-            # Add this image at the end of the list
-            image_files.append(additional_image_path)
-
-    return image_files
-
-
-# async def download_image(session, image_url, img_path):
-#     try:
-#         async with session.get(image_url) as response:
-#             if response.status != 200:
-#                 return None
-#             with open(img_path, "wb") as img_file:
-#                 img_file.write(await response.read())
-#         return img_path
-#     except Exception as e:
-#         print(f"Error downloading {image_url}: {e}")
-#         return None
-
-
-# async def download_images_concurrently(images, download_dir):
+# def download_and_convert_images(images, download_dir, additional_image_url=None):
 #     image_files = []
-#     os.makedirs(download_dir, exist_ok=True)
 
-#     async with aiohttp.ClientSession() as session:
-#         tasks = []
-#         for idx, img in enumerate(images, 1):
-#             image_url = f"https://meo.comick.pictures/{img['b2key']}"
+#     # Download and convert the chapter's images
+#     for idx, img in enumerate(images, 1):
+#         image_url = f"https://meo.comick.pictures/{img['b2key']}"
+#         print(image_url)
+#         image_response = requests.get(image_url)
+
+#         if image_response.status_code == 200:
 #             img_path = os.path.join(download_dir, f"{idx}.jpg")
-#             tasks.append(download_image(session, image_url, img_path))
+#             with open(img_path, "wb") as img_file:
+#                 img_file.write(image_response.content)
 
-#         results = await asyncio.gather(*tasks)
-#         image_files = [img for img in results if img is not None]
+#             try:
+#                 with Image.open(img_path) as img:
+#                     img = img.convert("RGB")
+#                     img.save(img_path, "JPEG")
+#             except Exception as e:
+#                 print(f"Error converting image: {e}")
+#                 continue
+
+#             image_files.append(img_path)
+
+#     # If an additional image is provided, download and add it
+#     if additional_image_url:
+#         additional_image_response = requests.get(additional_image_url)
+#         if additional_image_response.status_code == 200:
+#             additional_image_path = os.path.join(download_dir, "end_image.jpg")
+#             with open(additional_image_path, "wb") as img_file:
+#                 img_file.write(additional_image_response.content)
+
+#             # Add this image at the end of the list
+#             image_files.append(additional_image_path)
 
 #     return image_files
+
+
+async def download_image(session, image_url, img_path):
+    try:
+        async with session.get(image_url) as response:
+            if response.status != 200:
+                return None
+            with open(img_path, "wb") as img_file:
+                img_file.write(await response.read())
+        return img_path
+    except Exception as e:
+        print(f"Error downloading {image_url}: {e}")
+        return None
+
+
+async def download_images_concurrently(images, download_dir, additional_image_url=None):
+    os.makedirs(download_dir, exist_ok=True)
+    image_files = []
+    semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent downloads
+
+    async with aiohttp.ClientSession() as session:
+        async def limited_download(image_url, img_path):
+            async with semaphore:
+                return await download_image(session, image_url, img_path)
+
+        tasks = []
+        for idx, img in enumerate(images, 1):
+            image_url = f"https://meo.comick.pictures/{img['b2key']}"
+            img_path = os.path.join(download_dir, f"{idx}.jpg")
+            tasks.append(limited_download(image_url, img_path))
+
+        downloaded = await asyncio.gather(*tasks)
+
+        for img_path in downloaded:
+            if img_path:
+                try:
+                    with Image.open(img_path) as img:
+                        img = img.convert("RGB")
+                        img.save(img_path, "JPEG")
+                    image_files.append(img_path)
+                except Exception as e:
+                    print(f"Error processing image: {e}")
+
+    # Add end image
+    if additional_image_url:
+        try:
+            end_response = requests.get(additional_image_url)
+            if end_response.status_code == 200:
+                end_path = os.path.join(download_dir, "end_image.jpg")
+                with open(end_path, "wb") as f:
+                    f.write(end_response.content)
+                image_files.append(end_path)
+        except Exception as e:
+            print(f"Failed to fetch end image: {e}")
+
+    return image_files
 
 
 def create_pdf(image_files, pdf_path):
@@ -447,6 +478,7 @@ def create_pdf(image_files, pdf_path):
 async def process_chapter_queue(user_id):
     async def process_chapter(match):
         comic_hid_full, chap_hid, chap_num, callback_query = match
+        print(chap_num)
 
         download_dir = os.path.join(
             "downloads", f"{user_id}/{comic_hid_full}/{chap_num}"
@@ -481,7 +513,7 @@ async def process_chapter_queue(user_id):
             additional_image_path = "https://i.postimg.cc/RFZFqwRX/Manga-Mania.png"  # Ensure correct absolute path
 
             # Convert images and add the end page if available
-            image_files = download_and_convert_images(
+            image_files = await download_images_concurrently(
                 images, download_dir, additional_image_path
             )
 
@@ -516,10 +548,7 @@ async def process_chapter_queue(user_id):
         await process_chapter(await user_queues[user_id].get())
 
 
-
-
-
-@bot.on_callback_query(filters.regex(r"images\|(.+)\|(.+)\|(\d+)"))
+@bot.on_callback_query(filters.regex(r"images\|(.+)\|(.+)\|([\d.]+)"))
 async def send_chapter_images(client, callback_query):
     match = callback_query.matches[0]
     comic_hid_full = match.group(1)
